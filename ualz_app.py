@@ -1,111 +1,76 @@
-
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-from io import BytesIO
+from datetime import datetime, time
 
-# Configurazione pagina
-st.set_page_config(page_title="UALZ 2025 2026", page_icon="📚", layout="wide")
+@st.cache_data
+def load_data():
+    df = pd.read_excel('UALZ_programma_2025-2026.xlsx')
+    df['StartDate'] = pd.to_datetime(df['StartDate'], dayfirst=True).dt.date
+    df['EndDate'] = pd.to_datetime(df['EndDate'], dayfirst=True).dt.date
+    df['StartTime'] = pd.to_datetime(df['StartTime'], format='%H:%M').dt.time
+    df['EndTime'] = pd.to_datetime(df['EndTime'], format='%H:%M').dt.time
+    return df
 
-# Logo e titolo
-col1, col2 = st.columns([1, 5])
-with col1:
-    st.image("logo.png", width=100)
-with col2:
-    st.title("UALZ 2025 2026")
-    st.markdown("### Verifica sovrapposizioni corsi")
+def is_overlap(start1, end1, start2, end2):
+    return (start1 < end2) and (start2 < end1)
 
-# Carica i dati da Excel
-df = pd.read_excel("Corsi UALZ 2025 2026.xlsx", sheet_name="Foglio1", header=4)
-df.columns = [
-    "Giorno", "Fascia oraria", "Titolo", "Aula",
-    "Ora inizio", "Ora fine", "Data inizio", "Data fine"
-]
-df.dropna(subset=["Titolo", "Ora inizio", "Ora fine"], inplace=True)
+df = load_data()
 
-# Rinominare titoli duplicati
-counts = {}
-titoli_unici = []
-for titolo in df['Titolo']:
-    if titolo not in counts:
-        counts[titolo] = 1
-        titoli_unici.append(titolo)
+st.set_page_config(page_title="UALZ 2025 2026", layout="wide")
+st.title("UALZ 2025 2026")
+
+df['menu_option'] = df.apply(lambda r: f"{r['ID']} - {r['Titolo']}", axis=1)
+menu_options = sorted(df['menu_option'].unique())
+selected = st.selectbox("Seleziona il corso (ID - Titolo):", menu_options)
+selected_id = int(selected.split(' - ')[0])
+corso_sel = df[df['ID'] == selected_id].iloc[0]
+
+with st.container():
+    st.markdown("<h3 style='background-color:#b3d9ff; padding:10px; border-radius:5px;'>Dettagli corso selezionato</h3>", unsafe_allow_html=True)
+    col1, col2 = st.columns([1,2])
+    with col1:
+        st.write(f"**Titolo:** {corso_sel['Titolo']}")
+        st.write(f"**ID corso:** {corso_sel['ID']}")
+        st.write(f"**Giorno della settimana:** {corso_sel['Day']}")
+        st.write(f"**Orario:** {corso_sel['StartTime'].strftime('%H:%M')} - {corso_sel['EndTime'].strftime('%H:%M')}")
+    with col2:
+        st.write(f"**Date svolgimento:** {corso_sel['StartDate'].strftime('%d/%m/%Y')} - {corso_sel['EndDate'].strftime('%d/%m/%Y')}")
+        st.write(f"**Docenti:** {corso_sel['Teacher']}")
+        st.write(f"**Sede/Aula:** {corso_sel['Aula']}")
+
+same_day_courses = df[df['Day'] == corso_sel['Day']]
+
+def check_date_overlap(r1_start, r1_end, r2_start, r2_end):
+    return not (r1_end < r2_start or r2_end < r1_start)
+
+def course_overlaps(row):
+    return (
+        is_overlap(corso_sel['StartTime'], corso_sel['EndTime'], row['StartTime'], row['EndTime'])
+        and check_date_overlap(corso_sel['StartDate'], corso_sel['EndDate'], row['StartDate'], row['EndDate'])
+        and row['ID'] != corso_sel['ID']
+    )
+
+overlapping_courses = same_day_courses[same_day_courses.apply(course_overlaps, axis=1)]
+
+with st.container():
+    st.markdown("<h3 style='background-color:#ffcccc; padding:10px; border-radius:5px;'>Corsi che si svolgono in sovrapposizione</h3>", unsafe_allow_html=True)
+    if overlapping_courses.empty:
+        st.write("Nessun corso si svolge in sovrapposizione con il corso selezionato.")
     else:
-        counts[titolo] += 1
-        titoli_unici.append(f"{titolo} ({counts[titolo]})")
-df['Titolo univoco'] = titoli_unici
-
-# Ordinamento alfabetico
-df_sorted = df.sort_values(by="Titolo univoco")
-corsi_ordinati = df_sorted['Titolo univoco'].unique().tolist()
-
-# Menu a tendina
-corso_scelto = st.selectbox("Seleziona un corso:", corsi_ordinati)
-
-# Estrai dati del corso selezionato
-corso_row = df[df['Titolo univoco'] == corso_scelto].iloc[0]
-gor = corso_row['Giorno']
-inizio = datetime.strptime(str(corso_row['Ora inizio']), "%H:%M:%S").time()
-fine = datetime.strptime(str(corso_row['Ora fine']), "%H:%M:%S").time()
-
-# Mostra info principali del corso
-st.markdown("---")
-st.subheader("📄 Informazioni corso selezionato")
-info_col1, info_col2 = st.columns(2)
-with info_col1:
-    st.markdown(f"**Titolo:** {corso_row['Titolo']}")
-    st.markdown(f"**Giorno:** {gor}")
-with info_col2:
-    st.markdown(f"**Orario:** {inizio.strftime('%H:%M')} - {fine.strftime('%H:%M')}")
-    st.markdown(f"**Date:** {corso_row['Data inizio'].date()} → {corso_row['Data fine'].date()}")
-
-# Calcola sovrapposizioni
-conflitti = []
-for _, r in df.iterrows():
-    if r['Giorno'] != gor:
-        continue
-    start_r = datetime.strptime(str(r['Ora inizio']), "%H:%M:%S").time()
-    end_r = datetime.strptime(str(r['Ora fine']), "%H:%M:%S").time()
-    if (start_r < fine and end_r > inizio) and r['Titolo univoco'] != corso_scelto:
-        conflitti.append({
-            "Titolo": r['Titolo univoco'],
-            "Orario": f"{start_r.strftime('%H:%M')} - {end_r.strftime('%H:%M')}",
-            "Aula": r['Aula']
-        })
-
-# Riquadro riepilogo
-st.markdown("---")
-if conflitti:
-    st.success(f"📌 Trovati {len(conflitti)} corsi in sovrapposizione.")
-else:
-    st.info("✅ Nessuna sovrapposizione rilevata.")
-
-# Mostra elenco conflitti
-if conflitti:
-    st.subheader("📋 Elenco corsi in sovrapposizione")
-    for c in conflitti:
-        st.markdown(f"- **{c['Titolo']}** ({c['Orario']} – {c['Aula']})")
-
-# Pulsante di download
-if conflitti:
-    df_conflitti = pd.DataFrame(conflitti)
-
-    # Funzione per convertire in Excel
-    def to_excel(df):
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='Sovrapposizioni')
-        processed_data = output.getvalue()
-        return processed_data
-
-    excel_data = to_excel(df_conflitti)
-    csv_data = df_conflitti.to_csv(index=False).encode('utf-8')
-
-    st.download_button(label="📥 Scarica in Excel",
-                       data=excel_data,
-                       file_name="sovrapposizioni.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.download_button(label="📥 Scarica in CSV",
-                       data=csv_data,
-                       file_name="sovrapposizioni.csv",
-                       mime="text/csv")
+        st.dataframe(
+            overlapping_courses[['Titolo','ID','StartTime','EndTime','StartDate','EndDate','Teacher','Aula']]
+            .rename(columns={
+                'Titolo':'Titolo',
+                'ID':'ID',
+                'StartTime':'Inizio',
+                'EndTime':'Fine',
+                'StartDate':'Dal',
+                'EndDate':'Al',
+                'Teacher':'Docenti',
+                'Aula':'Sede/Aula'
+            })
+            .sort_values(by='StartTime')
+            .reset_index(drop=True),
+            height=300,
+            use_container_width=True
+        )
